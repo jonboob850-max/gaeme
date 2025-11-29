@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Full Screen Neon Runner</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, sans-serif;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden; /* no scrollbars */
+      background: radial-gradient(circle at top, #050516, #020008);
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    canvas {
+      display: block;
+      background: radial-gradient(circle at top, #101024, #050510);
+      border-radius: 0; /* fullscreen */
+    }
+
+    #gameOverPanel {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+    }
+
+    #gameOverInner {
+      pointer-events: auto;
+      background: rgba(5, 5, 20, 0.9);
+      border-radius: 16px;
+      padding: 16px 20px;
+      box-shadow: 0 0 30px rgba(0, 0, 0, 0.9);
+      text-align: center;
+      color: #f5f5f5;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    #gameOverInner h2 {
+      margin-bottom: 8px;
+    }
+
+    #finalScore {
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #00ffd5;
+      text-shadow: 0 0 8px rgba(0, 255, 213, 0.9);
+    }
+
+    button {
+      margin-top: 4px;
+      padding: 6px 16px;
+      border-radius: 999px;
+      border: none;
+      background: linear-gradient(135deg, #00e0ff, #00ff9c);
+      color: #021017;
+      cursor: pointer;
+      font-weight: 600;
+      box-shadow: 0 0 12px rgba(0, 224, 255, 0.9);
+      transition: transform 0.1s ease, box-shadow 0.1s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 0 18px rgba(0, 224, 255, 1);
+    }
+
+    button:active {
+      transform: translateY(1px);
+      box-shadow: 0 0 8px rgba(0, 224, 255, 0.7);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+
+  <div id="gameOverPanel">
+    <div id="gameOverInner">
+      <h2>Game Over</h2>
+      <div id="finalScore">Score: 0</div>
+      <div style="font-size:13px;opacity:0.8;">Press <b>R</b> or click to play again</div>
+      <button id="restartBtn">Restart</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    const gameOverPanel = document.getElementById("gameOverPanel");
+    const finalScoreText = document.getElementById("finalScore");
+    const restartBtn = document.getElementById("restartBtn");
+
+    let groundY = 0;
+
+    let player;
+    let obstacles;
+    let bgLines;
+
+    let running = false;
+    let score = 0;
+    let lastTime = 0;
+    let obstacleTimer = 0;
+
+    // ===== CONFIG (параболический прыжок) =====
+    const gravity = 0.7;     // постоянное ускорение вниз
+    const jumpForce = -20;   // стартовая скорость вверх (большой прыжок)
+    const baseObstacleInterval = 1400; // ms
+    let speedFactor = 1;
+    const baseObstacleSpeed = 0.4;     // px / ms
+
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      groundY = canvas.height - Math.max(100, canvas.height * 0.18);
+      initBackground();
+    }
+
+    function initBackground() {
+      bgLines = [];
+      const count = 20;
+      for (let i = 0; i < count; i++) {
+        bgLines.push({
+          x: Math.random() * canvas.width,
+          y: Math.random() * canvas.height,
+          length: 50 + Math.random() * 80,
+          speed: 0.15 + Math.random() * 0.3,
+          alpha: 0.08 + Math.random() * 0.12
+        });
+      }
+    }
+
+    function resetGame() {
+      player = {
+        x: canvas.width * 0.15,
+        y: groundY - 50,
+        w: 50,
+        h: 50,
+        vy: 0,
+        onGround: true,
+        angle: 0,            // угловое положение
+        angularVelocity: 0   // скорость вращения
+      };
+
+      obstacles = [];
+      score = 0;
+      lastTime = 0;
+      obstacleTimer = 0;
+      speedFactor = 1;
+      running = true;
+      gameOverPanel.style.display = "none";
+    }
+
+    function spawnObstacle() {
+      const w = 40;
+      const h = 70;
+      obstacles.push({
+        x: canvas.width + 40,
+        y: groundY - h,
+        w: w,
+        h: h
+      });
+    }
+
+    function rectRectCollide(a, b) {
+      return (
+        a.x < b.x + b.w &&
+        a.x + a.w > b.x &&
+        a.y < b.y + b.h &&
+        a.y + a.h > b.y
+      );
+    }
+
+    function update(dt) {
+      if (!running) return;
+
+      // скорость растёт медленно
+      speedFactor += dt * 0.00003;
+      const obstacleInterval = baseObstacleInterval / speedFactor;
+      const obstacleSpeed = baseObstacleSpeed * speedFactor;
+
+      // счёт
+      score += dt * 0.015 * speedFactor;
+
+      // === ПАРАБОЛИЧЕСКИЙ ПРЫЖОК ===
+      const wasOnGround = player.onGround;
+
+      player.vy += gravity;
+      player.y += player.vy;
+
+      if (player.y + player.h > groundY) {
+        player.y = groundY - player.h;
+        player.vy = 0;
+        player.onGround = true;
+      } else {
+        player.onGround = false;
+      }
+
+      // вращение кубика в воздухе
+      if (!player.onGround) {
+        player.angle += player.angularVelocity * dt;
+        // лёгкое затухание, чтобы не ускорялся вечно
+        player.angularVelocity *= 0.995;
+      }
+
+      // только что приземлился -> выровнять кубик
+      if (!wasOnGround && player.onGround) {
+        player.angle = 0;
+        player.angularVelocity = 0;
+      }
+
+      // фоновые линии
+      for (let i = 0; i < bgLines.length; i++) {
+        const s = bgLines[i];
+        s.y += s.speed * dt;
+        if (s.y - s.length > canvas.height) {
+          s.y = -10;
+          s.x = Math.random() * canvas.width;
+        }
+      }
+
+      // препятствия
+      obstacleTimer += dt;
+      if (obstacleTimer >= obstacleInterval) {
+        spawnObstacle();
+        obstacleTimer = 0;
+      }
+
+      const moveAmount = obstacleSpeed * dt;
+
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const o = obstacles[i];
+        o.x -= moveAmount;
+
+        if (rectRectCollide(player, o)) {
+          gameOver();
+        }
+
+        if (o.x + o.w < 0) {
+          obstacles.splice(i, 1);
+        }
+      }
+
+      if (player.y > canvas.height + 100) {
+        gameOver();
+      }
+    }
+
+    function drawRoundedRect(x, y, w, h, r) {
+      const radius = Math.min(r, w / 2, h / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + w - radius, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+      ctx.lineTo(x + w, y + h - radius);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+      ctx.lineTo(x + radius, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+    }
+
+    function draw() {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // горизонтальная сетка
+      ctx.save();
+      ctx.globalAlpha = 0.08;
+      ctx.strokeStyle = "#2b3050";
+      ctx.lineWidth = 1;
+      for (let y = 0; y < canvas.height; y += 40) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // неоновые линии
+      for (let i = 0; i < bgLines.length; i++) {
+        const s = bgLines[i];
+        ctx.save();
+        ctx.globalAlpha = s.alpha;
+        ctx.strokeStyle = "#3fe0ff";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(s.x, s.y - s.length);
+        ctx.lineTo(s.x, s.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // земля
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(0, groundY + 2);
+      ctx.lineTo(canvas.width, groundY + 2);
+      ctx.strokeStyle = "#33ffaa";
+      ctx.lineWidth = 3;
+      ctx.shadowColor = "#33ffaa";
+      ctx.shadowBlur = 14;
+      ctx.stroke();
+      ctx.restore();
+
+      // HUD
+      ctx.save();
+      ctx.globalAlpha = 0.85;
+      ctx.font = "16px system-ui";
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText("Score: " + Math.floor(score), 20, 30);
+
+      ctx.font = "12px system-ui";
+      ctx.fillStyle = "#8cf5ff";
+      ctx.fillText("Speed x" + speedFactor.toFixed(2), 20, 50);
+
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#bbbbff";
+      ctx.fillText("SPACE / Click / Tap to jump", canvas.width - 20, 30);
+      ctx.restore();
+
+      // ===== РИСУЕМ КУБ С ПОВОРОТОМ =====
+      ctx.save();
+      const cx = player.x + player.w / 2;
+      const cy = player.y + player.h / 2;
+
+      ctx.translate(cx, cy);
+      ctx.rotate(player.angle);
+
+      ctx.shadowColor = "#00f7ff";
+      ctx.shadowBlur = 18;
+
+      drawRoundedRect(-player.w / 2, -player.h / 2, player.w, player.h, 10);
+      const pGrad = ctx.createLinearGradient(
+        -player.w / 2,
+        -player.h / 2,
+        player.w / 2,
+        player.h / 2
+      );
+      pGrad.addColorStop(0, "#00e0ff");
+      pGrad.addColorStop(1, "#00ff9c");
+      ctx.fillStyle = pGrad;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      // глаза в локальных координатах куба
+      ctx.fillStyle = "#021017";
+      ctx.fillRect(-player.w * 0.25, -player.h * 0.15, 6, 6);
+      ctx.fillRect(player.w * 0.25 - 6, -player.h * 0.15, 6, 6);
+
+      ctx.restore();
+
+      // препятствия
+      for (let i = 0; i < obstacles.length; i++) {
+        const o = obstacles[i];
+        ctx.save();
+        drawRoundedRect(o.x, o.y, o.w, o.h, 8);
+        const g = ctx.createLinearGradient(o.x, o.y, o.x, o.y + o.h);
+        g.addColorStop(0, "#ff7aa1");
+        g.addColorStop(1, "#ff2557");
+        ctx.fillStyle = g;
+        ctx.shadowColor = "#ff2557";
+        ctx.shadowBlur = 16;
+        ctx.fill();
+        ctx.restore();
+      }
+
+      if (!running) {
+        ctx.save();
+        ctx.fillStyle = "rgba(0,0,0,0.4)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+      }
+    }
+
+    function gameLoop(timestamp) {
+      if (!lastTime) lastTime = timestamp;
+      const dt = timestamp - lastTime;
+      lastTime = timestamp;
+
+      update(dt);
+      draw();
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    function jump() {
+      if (!running) return;
+      if (player.onGround) {
+        player.vy = jumpForce;
+        player.onGround = false;
+
+        // задаём скорость вращения при каждом прыжке
+        // 0.01 рад/мс ≈ 0.01 * 1000 = 10 рад / сек (~1.6 оборота/сек)
+        player.angularVelocity = 0.01;
+      }
+    }
+
+    function gameOver() {
+      running = false;
+      finalScoreText.textContent = "Score: " + Math.floor(score);
+      gameOverPanel.style.display = "flex";
+    }
+
+    window.addEventListener("keydown", (e) => {
+      if (e.code === "Space" || e.code === "ArrowUp") {
+        e.preventDefault();
+        jump();
+      }
+      if ((e.key === "r" || e.key === "R") && !running) {
+        resetGame();
+      }
+    });
+
+    canvas.addEventListener("mousedown", () => {
+      jump();
+    });
+
+    canvas.addEventListener("touchstart", (e) => {
+      e.preventDefault();
+      jump();
+    }, { passive: false });
+
+    restartBtn.addEventListener("click", () => {
+      resetGame();
+    });
+
+    window.addEventListener("resize", () => {
+      resizeCanvas();
+      if (!running) {
+        draw();
+      }
+    });
+
+    // init
+    resizeCanvas();
+    resetGame();
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
